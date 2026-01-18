@@ -119,7 +119,7 @@
 				</executions>
 			</plugin>
 
-			<!-- PIT Mutation Testing -->
+			<!-- PIT Mutation Testing with Incremental Support -->
 			<plugin>
 				<groupId>org.pitest</groupId>
 				<artifactId>pitest-maven</artifactId>
@@ -132,17 +132,30 @@
 					</dependency>
 				</dependencies>
 				<configuration>
+					<!-- Incremental analysis for faster local runs -->
+					<historyInputFile>${project.basedir}/.pit-history/history.bin</historyInputFile>
+					<historyOutputFile>${project.basedir}/.pit-history/history.bin</historyOutputFile>
+					<withHistory>true</withHistory>
+
+					<!-- Target configuration -->
 					<targetClasses>
 						<param>api.commerce.express.*</param>
 					</targetClasses>
 					<targetTests>
 						<param>api.commerce.express.*</param>
 					</targetTests>
+
+					<!-- Output formats -->
 					<outputFormats>
 						<format>XML</format>
 						<format>HTML</format>
 					</outputFormats>
 					<timestampedReports>false</timestampedReports>
+
+					<!-- Performance tuning -->
+					<threads>4</threads>
+					<timeoutConstant>5000</timeoutConstant>
+					<timeoutFactor>1.5</timeoutFactor>
 				</configuration>
 			</plugin>
 		</plugins>
