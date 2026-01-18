@@ -1,0 +1,215 @@
+name: Quality Analysis & Badges
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly on Monday at 6 AM
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  analyze:
+    name: Code Quality Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      # Run tests with coverage
+      - name: Run Tests with Coverage
+        working-directory: ./server
+        run: mvn -B test jacoco:report
+        continue-on-error: true
+
+      # Run SpotBugs for bug detection
+      - name: Run SpotBugs
+        working-directory: ./server
+        run: mvn -B com.github.spotbugs:spotbugs-maven-plugin:4.8.3.0:check -Dspotbugs.xmlOutput=true
+        continue-on-error: true
+
+      # Run PMD for code quality
+      - name: Run PMD
+        working-directory: ./server
+        run: mvn -B pmd:pmd pmd:check
+        continue-on-error: true
+
+      # Run OWASP Dependency Check for security
+      - name: Run Security Scan
+        working-directory: ./server
+        run: mvn -B org.owasp:dependency-check-maven:8.4.3:check
+        continue-on-error: true
+
+      # Run PIT Mutation Testing
+      - name: Run Mutation Testing
+        working-directory: ./server
+        run: mvn -B org.pitest:pitest-maven:mutationCoverage
+        continue-on-error: true
+
+      # Generate metrics JSON
+      - name: Generate Metrics
+        id: metrics
+        run: |
+          echo "Analyzing reports..."
+
+          # Initialize metrics
+          BUGS=0
+          VULNERABILITIES=0
+          CODE_SMELLS=0
+          DUPLICATION=0
+          MUTATION_SCORE="N/A"
+
+          # Count SpotBugs issues
+          if [ -f server/target/spotbugsXml.xml ]; then
+            BUGS=$(grep -c "<BugInstance" server/target/spotbugsXml.xml 2>/dev/null || echo "0")
+          fi
+
+          # Count PMD violations
+          if [ -f server/target/pmd.xml ]; then
+            CODE_SMELLS=$(grep -c "<violation" server/target/pmd.xml 2>/dev/null || echo "0")
+          fi
+
+          # Count OWASP vulnerabilities
+          if [ -f server/target/dependency-check-report.xml ]; then
+            VULNERABILITIES=$(grep -c "<vulnerability>" server/target/dependency-check-report.xml 2>/dev/null || echo "0")
+          fi
+
+          # Get mutation score
+          if [ -f server/target/pit-reports/mutations.xml ]; then
+            KILLED=$(grep -c 'status="KILLED"' server/target/pit-reports/mutations.xml 2>/dev/null || echo "0")
+            TOTAL=$(grep -c "<mutation" server/target/pit-reports/mutations.xml 2>/dev/null || echo "1")
+            if [ "$TOTAL" -gt 0 ]; then
+              MUTATION_SCORE=$((KILLED * 100 / TOTAL))
+            fi
+          fi
+
+          # Calculate quality grade
+          TOTAL_ISSUES=$((BUGS + VULNERABILITIES + CODE_SMELLS))
+          if [ "$TOTAL_ISSUES" -eq 0 ]; then
+            GRADE="A"
+            GRADE_COLOR="brightgreen"
+          elif [ "$TOTAL_ISSUES" -lt 5 ]; then
+            GRADE="B"
+            GRADE_COLOR="green"
+          elif [ "$TOTAL_ISSUES" -lt 15 ]; then
+            GRADE="C"
+            GRADE_COLOR="yellow"
+          elif [ "$TOTAL_ISSUES" -lt 30 ]; then
+            GRADE="D"
+            GRADE_COLOR="orange"
+          else
+            GRADE="F"
+            GRADE_COLOR="red"
+          fi
+
+          # Set outputs
+          echo "bugs=$BUGS" >> $GITHUB_OUTPUT
+          echo "vulnerabilities=$VULNERABILITIES" >> $GITHUB_OUTPUT
+          echo "code_smells=$CODE_SMELLS" >> $GITHUB_OUTPUT
+          echo "mutation_score=$MUTATION_SCORE" >> $GITHUB_OUTPUT
+          echo "grade=$GRADE" >> $GITHUB_OUTPUT
+          echo "grade_color=$GRADE_COLOR" >> $GITHUB_OUTPUT
+
+      # Update README badges
+      - name: Update README Badges
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          # Create badges section if README doesn't have it
+          if ! grep -q "<!-- QUALITY-BADGES-START -->" README.md 2>/dev/null; then
+            echo "No badge section found - skipping badge update"
+            exit 0
+          fi
+
+          BADGES="<!-- QUALITY-BADGES-START -->
+          ![Quality Grade](https://img.shields.io/badge/quality-${{ steps.metrics.outputs.grade }}-${{ steps.metrics.outputs.grade_color }})
+          ![Bugs](https://img.shields.io/badge/bugs-${{ steps.metrics.outputs.bugs }}-${{ steps.metrics.outputs.bugs > 0 && 'red' || 'brightgreen' }})
+          ![Vulnerabilities](https://img.shields.io/badge/vulnerabilities-${{ steps.metrics.outputs.vulnerabilities }}-${{ steps.metrics.outputs.vulnerabilities > 0 && 'red' || 'brightgreen' }})
+          ![Code Smells](https://img.shields.io/badge/code%20smells-${{ steps.metrics.outputs.code_smells }}-${{ steps.metrics.outputs.code_smells > 5 && 'yellow' || 'brightgreen' }})
+          ![Mutation Score](https://img.shields.io/badge/mutation%20score-${{ steps.metrics.outputs.mutation_score }}%25-${{ steps.metrics.outputs.mutation_score >= 80 && 'brightgreen' || steps.metrics.outputs.mutation_score >= 60 && 'yellow' || 'red' }})
+          <!-- QUALITY-BADGES-END -->"
+
+          # Update README
+          sed -i '/<!-- QUALITY-BADGES-START -->/,/<!-- QUALITY-BADGES-END -->/c\'"$BADGES" README.md
+
+          # Commit if changed
+          if git diff --quiet README.md; then
+            echo "No changes to commit"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add README.md
+            git commit -m "Update quality badges [skip ci]"
+            git push
+          fi
+
+      # Upload reports
+      - name: Upload Analysis Reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-reports
+          path: |
+            server/target/site/jacoco/
+            server/target/pmd.xml
+            server/target/spotbugsXml.xml
+            server/target/pit-reports/
+            server/target/dependency-check-report.html
+          retention-days: 30
+
+      # PR Comment with results
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const metrics = {
+              grade: '${{ steps.metrics.outputs.grade }}',
+              bugs: '${{ steps.metrics.outputs.bugs }}',
+              vulnerabilities: '${{ steps.metrics.outputs.vulnerabilities }}',
+              codeSmells: '${{ steps.metrics.outputs.code_smells }}',
+              mutationScore: '${{ steps.metrics.outputs.mutation_score }}'
+            };
+
+            const body = `## 📊 Code Quality Report
+
+            | Metric | Value |
+            |--------|-------|
+            | Quality Grade | **${metrics.grade}** |
+            | Bugs | ${metrics.bugs} |
+            | Security Vulnerabilities | ${metrics.vulnerabilities} |
+            | Code Smells | ${metrics.codeSmells} |
+            | Mutation Score | ${metrics.mutationScore}% |
+
+            <details>
+            <summary>What do these metrics mean?</summary>
+
+            - **Quality Grade**: Overall code quality (A-F based on total issues)
+            - **Bugs**: Potential bugs detected by SpotBugs
+            - **Vulnerabilities**: Security issues in dependencies (OWASP)
+            - **Code Smells**: Maintainability issues detected by PMD
+            - **Mutation Score**: Test effectiveness (% of mutants killed by tests)
+
+            </details>
+
+            ---
+            🤖 Generated by Quality Analysis Workflow`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
