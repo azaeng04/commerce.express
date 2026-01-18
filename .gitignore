@@ -33,3 +33,7 @@ build/
 .vscode/
 .DS_Store
 .mvn
+
+### PIT Mutation Testing ###
+.pit-history/
+server/.pit-history/
