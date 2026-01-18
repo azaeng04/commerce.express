@@ -80,3 +80,4 @@ jobs:
           path: server/target/pit-reports/
           retention-days: 30
           if-no-files-found: ignore
+
